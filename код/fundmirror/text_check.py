@@ -14,7 +14,8 @@ words = re.findall(r"[А-Яа-яЁёA-Za-z]+(?:-[А-Яа-яЁё]+)?", plain)
 sents = [s.strip() for s in re.split(r"(?<=[.!?:])\s+(?=[А-ЯA-Z0-9«])", plain) if len(s.split()) > 2]
 syl = sum(len(re.findall(r"[аеёиоуыэюяaeiouy]", w.lower())) for w in words)
 asl, asw = len(words) / len(sents), syl / len(words)
-print(f"знаков с пробелами: {len(plain)}; без пробелов: {len(re.sub(r'\s', '', plain))}; слов: {len(words)}")
+nospace = len(re.sub(r"\s", "", plain))
+print(f"знаков с пробелами: {len(plain)}; без пробелов: {nospace}; слов: {len(words)}")
 print(f"предложений: {len(sents)}; средняя длина: {asl:.1f} слова; слогов на слово: {asw:.2f}; "
       f"индекс Флеша–Оборневой: {206.835 - 1.52 * asl - 65.14 * asw:.0f} (выше — легче)")
 print("самые длинные предложения:")

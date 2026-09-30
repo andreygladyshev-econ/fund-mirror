@@ -1,9 +1,10 @@
 """Рисунок 4 из выпуска месячного цикла (mirror_cycle.py): список кандидатов на продажу для одного фонда (бумаги
-обезличены) и блок «что сейчас показывает зеркало» — квартальная проверка правила и записка ИИ-аналитика.
-python3 figure_card.py [ГГГГ-ММ] -> рисунки/р9_карточка.png"""
+обезличены) и блок «что сейчас показывает зеркало» — последняя квартальная проверка правила и главное из версии,
+предложенной ИИ-аналитиком. Всё берётся из выпуска и зеркало_состояние.json. python3 figure_card.py [ГГГГ-ММ] -> рисунки/рис4_карточка.png"""
 import csv
 import json
 import sys
+import textwrap
 
 import matplotlib
 matplotlib.use("Agg")
@@ -11,6 +12,8 @@ import matplotlib.pyplot as plt
 from matplotlib import font_manager
 from matplotlib.patches import FancyBboxPatch
 
+import rule as A
+from agent_rate import rate
 from robust import ROOT
 
 MONTH = sys.argv[1] if len(sys.argv) > 1 else "2026-08"
@@ -22,8 +25,9 @@ plt.rcParams.update({"font.family": "PT Sans"})
 OUT = ROOT.parents[1] / "рисунки"
 rows = [r for r in csv.DictReader(open(ROOT.parent / "зеркало" / "выпуски" / MONTH / "списки.csv", encoding="utf-8")) if r["фонд"] == FUND]
 st = json.loads((ROOT / "зеркало_состояние.json").read_text())
-chk = st["история"][-1]
+chk = [h for h in st["история"] if h["месяц"] <= MONTH][-1]
 num = lambda v: f"{float(v):.1f}".replace(".", ",").replace(",0", "")
+pct = lambda v: f"{v:g}".replace(".", ",")
 sign = lambda v: f"{v:+.1f}".replace(".", ",").replace("-", "−")
 MON = {"01": "январь", "02": "февраль", "03": "март", "04": "апрель", "05": "май", "06": "июнь", "07": "июль", "08": "август",
        "09": "сентябрь", "10": "октябрь", "11": "ноябрь", "12": "декабрь"}
@@ -49,17 +53,36 @@ for k, r in enumerate(rows[:5]):
     ax.text(x0 + 0.35, y, f"Бумага {'АБВГД'[k]}", color=INK, fontsize=9.5, va="center")
     ax.text(x0 + 1.5, y, f"{num(r['доля_%'])}%", color=INK, fontsize=9.5, va="center")
     ax.text(x0 + 2.55, y, num(r["балл"]), color=INK, fontsize=9.5, fontweight="bold", va="center")
-    ax.text(x0 + 3.05, y, " · ".join(r["что_отмечает"].split(" · ")[:3]), color=INK, fontsize=7.7, va="center")
+    parts = r["что_отмечает"].split(" · ")                      # все сработавшие условия: их баллы дают балл строки
+    txt = " · ".join(parts) if len(parts) <= 3 else " · ".join(parts[:3]) + "\n" + " · ".join(parts[3:])
+    ax.text(x0 + 3.05, y, txt, color=INK, fontsize=7.7 if len(parts) <= 3 else 7.2, va="center", linespacing=1.15)
 rest = len(rows) - 5
 word = "позиция" if rest % 10 == 1 and rest % 100 != 11 else "позиции" if rest % 10 in (2, 3, 4) and rest % 100 not in (12, 13, 14) else "позиций"
 ax.text(x0, 4.3 - 5 * 0.52, f"… еще {rest} {word} от 0,5% портфеля с меньшим баллом", color=MUTED, fontsize=8.5, va="center")
 ax.plot([8.2, 8.2], [1.45, 4.85], color=LINE, lw=1)
 xr = 8.45
 ax.text(xr, 4.7, "ЧТО СЕЙЧАС ПОКАЗЫВАЕТ ЗЕРКАЛО", color=BLUE, fontsize=8.3, fontweight="bold", va="center")
+NAME = {("fcf_neg", ">"): "денежный поток < 0", ("np_neg", ">"): "убыток", ("yld", "<"): "низкие дивиденды",
+        ("debt_ebitda", ">"): "высокий долг", ("roe", "<"): "низкий ROE", ("np_g", "<"): "падение прибыли",
+        ("rev_g", "<"): "падение выручки", ("pe", ">"): "высокий P/E", ("pb", ">"): "высокий P/B",
+        ("ev_ebitda", ">"): "высокий EV/EBITDA", ("p12", ">"): "рост цены за год", ("p12", "<"): "падение цены за год",
+        ("p3", ">"): "рост цены за 3 мес."}
+verdict = ("правило обновлено." if chk["заменено"] else
+           f"разница меньше {A.MARGIN:g} п.п.:\nправило оставлено.")
 ax.text(xr, 4.4, f"Проверка правила, {when(chk['месяц'])}:\nна {chk['продаж_за_год']} продажах рынка за год\n"
-        f"версия ИИ-аналитика {sign(chk['новое'])} п.п.,\nпрежнее правило {sign(chk['действующее'])} п.п.;\n"
-        f"правило {'обновлено' if chk['заменено'] else 'оставлено'}.", color=INK, fontsize=8.4, va="top", linespacing=1.3)
-ax.text(xr, 2.95, f"Записка ИИ-аналитика, {when(chk['месяц'])}:", color=MUTED, fontsize=8.3, fontweight="bold", va="top")
-ax.text(xr, 2.62, "ставка снижается с 16 до 14,25%;\nотстающих лучше всего отмечают\nотрицательный денежный поток\nи убыток; вес низких дивидендов\nповышен.", color=INK, fontsize=8.3, va="top", linespacing=1.3)
-fig.savefig(OUT / "р9_карточка.png", dpi=220, bbox_inches="tight", facecolor="white")
+        f"версия ИИ-аналитика {sign(chk['новое'])} п.п.,\nдействующее правило {sign(chk['действующее'])} п.п.;\n{verdict}",
+        color=INK, fontsize=8.4, va="top", linespacing=1.3)
+ver = chk["новая_версия"][0] if chk["новая_версия"] else []
+r0, r1 = rate(A.shift(chk["месяц"], -6)), rate(chk["месяц"])
+groups = {}
+for c in sorted(ver, key=lambda c: -c["баллы"])[:3]:
+    groups.setdefault(c["баллы"], []).append(NAME.get((c["признак"], c["знак"]), c["признак"]))
+feat_txt = ", ".join(f"{', '.join(v)} ({'по ' if len(v) > 1 else ''}{k})" for k, v in groups.items())
+wrapped = textwrap.fill(f"главное в предложенной версии: {feat_txt}.", 34)
+move = "снизилась" if r1 < r0 else "выросла" if r1 > r0 else "не менялась"
+rate_txt = f"ставка {move} до {pct(r1)}% (полгода назад {pct(r0)}%)" if r1 != r0 else f"ставка {pct(r1)}%, за полгода не менялась"
+ax.text(xr, 2.8, f"Записка ИИ-аналитика, {when(chk['месяц'])}:", color=MUTED, fontsize=8.3, fontweight="bold", va="top")
+ax.text(xr, 2.47, textwrap.fill(rate_txt, 34) + ";\n" + wrapped,
+        color=INK, fontsize=8.3, va="top", linespacing=1.3)
+fig.savefig(OUT / "рис4_карточка.png", dpi=220, bbox_inches="tight", facecolor="white")
 print("ok", len(rows))

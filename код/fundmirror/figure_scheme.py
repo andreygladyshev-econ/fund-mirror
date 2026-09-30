@@ -1,5 +1,5 @@
-"""Схема ИИ-агента «Зеркало рынка»: где работают ИИ, данные всего рынка, методика и человек (29.09, v8;
-схема v7 — в истории git/рисунки/р7_0). python3 figure_scheme.py -> рисунки/р8_0_схема.png"""
+"""Рисунок 3 записки — схема ИИ-агента «Зеркало рынка»: где работают ИИ, данные всего рынка, методика и человек.
+python3 figure_scheme.py -> рисунки/рис3_схема.png"""
 from pathlib import Path
 
 import matplotlib
@@ -44,5 +44,5 @@ for i0, i1, lab in ((0, 1, "ДАННЫЕ · каждый месяц"), (2, 3, "�
     xa, xb = 0.1 + i0 * (w + gap), 0.1 + i1 * (w + gap) + w
     ax.plot([xa + 0.05, xb - 0.05], [2.4, 2.4], color=INK, lw=1.2)
     ax.text((xa + xb) / 2, 2.52, lab, ha="center", va="bottom", color=INK, fontsize=8.6, fontweight="bold")
-fig.savefig(OUT / "р8_0_схема.png", dpi=220, bbox_inches="tight", facecolor="white")
+fig.savefig(OUT / "рис3_схема.png", dpi=220, bbox_inches="tight", facecolor="white")
 print("ok")

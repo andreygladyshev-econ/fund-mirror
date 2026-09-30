@@ -1,4 +1,4 @@
-"""Продолжают ли работать признаки слабой бумаги, которые работали последний год (план записан до расчёта, 30.09.2026).
+"""Продолжают ли работать признаки слабой бумаги, которые работали последний год (гипотезы — в README).
 Весь рынок: каждый конец месяца все бумаги из портфелей фондов с отчётностью, доходность за 3 мес. минус доходность
 похожих бумаг. python3 signal_momentum.py panel | test"""
 import contextlib
@@ -12,7 +12,7 @@ from pathlib import Path
 
 import numpy as np
 
-import agent_replay as A
+import rule as A
 import rulegen as R
 import sellrank as S
 from agent_mirror import SIG
@@ -77,8 +77,7 @@ def test():
         if len(past) >= 6:
             hist[(i, m)] = float(np.mean(past))
     prior_rules = [r["правило"] for r in json.loads((ROOT / "правила_prior.json").read_text())]
-    pts = lambda fe, rules: sum(c["баллы"] for rule in rules for c in rule if fe.get(c["признак"]) is not None and
-                               ((c["знак"] == ">" and fe[c["признак"]] > c["порог"]) or (c["знак"] == "<" and fe[c["признак"]] < c["порог"])))
+    pts = lambda fe, rules: A.points(rules, fe)
 
     def composite(rows, score):
         sc = {x: score(x) for x in rows}

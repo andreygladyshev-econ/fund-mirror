@@ -1,7 +1,7 @@
-"""Рисунки записки v6–v8 (29.09; с v8 рисунок 1 пишется в р8_1 и показывает для обеих сторон рост бумаги сверх похожих,
-без смены знака у продаж, чтобы разрыв = купленные − проданные совпадал с расстоянием между точками): одна выборка для покупок, продаж и их разницы (продажи без сокращений крупных позиций);
-знак «результата продажи» = доходность похожих бумаг минус доходность проданной (плюс — продажа выгодна).
-python3 figures_v7.py -> рисунки/р7_*.png, рисунки/числа_р7.json"""
+"""Рисунок 1 и числа раздела 3: купленные и проданные бумаги активных и индексных фондов против похожих бумаг за 3 мес.
+после сделки (одна выборка для покупок, продаж и разрыва; продажи без крупных сокращений); разрыв «купленные минус
+проданные» при трёх способах подбора похожих бумаг (по обороту торгов, 3 и 5 групп; по весу в индексе МосБиржи).
+python3 figure_problem.py -> рисунки/рис1_покупки_продажи.png, рисунки/числа_проблема.json"""
 import contextlib
 import io
 import json
@@ -21,7 +21,7 @@ plt.rcParams.update({"font.family": "PT Sans", "font.size": 10.5, "axes.spines.t
                      "axes.spines.left": False, "axes.edgecolor": "#52514e", "xtick.color": "#52514e", "ytick.color": "#0b0b0b"})
 INK, MUTED, SURF, ACT, IDXC = "#0b0b0b", "#52514e", "#ffffff", "#2a78d6", "#b7b5ad"
 ROOT_ = Path(__file__).resolve().parents[2]
-OUT = ROOT_ / "рисунки" if (ROOT_ / "рисунки").exists() else ROOT_ / "документы" / "рисунки"
+OUT = ROOT_ / "рисунки"
 num = lambda v: f"{v:+.1f}".replace(".", ",").replace("-", "−")
 
 
@@ -84,10 +84,10 @@ sp = lambda n: f"{n:,}".replace(",", " ")
 fig.text(0.01, 0.01, f"Активные фонды: {sp(nb_)} покупок и {sp(ns_)} продаж без крупных сокращений. "
          "Линии: 95% доверительный интервал.", fontsize=7.8, color=MUTED, wrap=True)
 fig.subplots_adjust(bottom=0.19, top=0.97, left=0.15, right=0.98)
-fig.savefig(OUT / "р8_1_покупки_продажи.png", dpi=220, facecolor=SURF)
+fig.savefig(OUT / "рис1_покупки_продажи.png", dpi=220, facecolor=SURF)
 plt.close(fig)
 
-# Рисунок 2. Итог «купленные против проданных» при трёх способах подобрать похожие бумаги
+# Итог «купленные против проданных» при трёх способах подобрать похожие бумаги
 res = {"по обороту торгов, 3 группы": nums["активные фонды"]["купленные − проданные"],
        "по обороту торгов, 5 групп": None, "по весу в индексе МосБиржи": None}
 idxres = {"по обороту торгов, 3 группы": nums["индексные фонды (контроль)"]["купленные − проданные"]}
@@ -98,26 +98,9 @@ for nb, lab in (("5", "по обороту торгов, 5 групп"), ("w", "
     res[lab] = [round(v, 2) for v in g2["diff"](*sub(False))]
     idxres[lab] = [round(v, 2) for v in g2["diff"](*sub(True))]
 nums["итог по способам"] = {"активные": res, "индексные": idxres}
-fig, ax = plt.subplots(figsize=(7.0, 3.2), facecolor=SURF)
-for i, lab in enumerate(res):
-    for j, (v, c) in enumerate(((res[lab], ACT), (idxres[lab], IDXC))):
-        y = i + (j - 0.5) * 0.34
-        ax.plot([v[1], v[2]], [y, y], color=c, lw=2.2, alpha=0.6, solid_capstyle="round")
-        ax.scatter([v[0]], [y], s=110, color=c, zorder=3, edgecolor="white", linewidth=1.3)
-        ax.text(v[2] + 0.12, y, num(v[0]), va="center", fontsize=9.5, color=INK if j == 0 else MUTED,
-                fontweight="bold" if j == 0 else "normal")
-ax.set_yticks(range(len(res)), [f"похожие бумаги подобраны\n{k}" for k in res])
-ax.invert_yaxis()
-ax.axvline(0, color=MUTED, lw=0.8, ls=(0, (3, 3)))
-ax.tick_params(axis="y", length=0)
-ax.grid(axis="x", color="#eceae4", lw=0.7)
-ax.set_xlabel("купленные бумаги против проданных, п.п. за 3 месяца", color=MUTED)
-ax.legend(handles=[plt.Line2D([], [], marker="o", ls="", markersize=9, color=c) for c in (ACT, IDXC)],
-          labels=["активные фонды", "индексные фонды (контроль)"], frameon=False, fontsize=9, loc="lower left",
-          bbox_to_anchor=(0, 1.0), ncol=2)
-fig.text(0.01, 0.01, "Точка: оценка; линия: 95% доверительный интервал.", fontsize=8, color=MUTED)
-fig.subplots_adjust(bottom=0.2, top=0.85, left=0.34, right=0.95)
-fig.savefig(OUT / "р7_2_устойчивость.png", dpi=220, facecolor=SURF)
-plt.close(fig)
-(OUT / "числа_р7.json").write_text(json.dumps(nums, ensure_ascii=False, indent=1))
+nums["покупки: активные − индексные"] = [round(v, 2) for v in g["res"]["покупки: активные − индексные"]]
+# контроль сравнения с индексом МосБиржи: у индексных фондов «результат» должен быть нулевым (минус у продаж — «выигрыш»)
+nums["индексные фонды против индекса МосБиржи"] = {k: [round(g["res"][f"индексные (плацебо) | {k}"]["Б"][c], 2) for c in ("D", "lo", "hi")]
+                                                  for k in ("покупка", "продажа", "выход", "сокращение < 7%")}
+(OUT / "числа_проблема.json").write_text(json.dumps(nums, ensure_ascii=False, indent=1))
 print(json.dumps(nums, ensure_ascii=False, indent=1))

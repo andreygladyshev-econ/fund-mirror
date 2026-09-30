@@ -1,8 +1,7 @@
-"""«Зеркало» против бенчмарка (ответ на ревью К1): решение = бумага минус индекс МосБиржи (Б) и минус свой портфель,
-взвешенный по стоимости (В); плацебо — индексные фонды; блочный бутстрэп по месяцам. Предрег. 28.09.
-python3 mirror_bench.py [порог_выборочности=0.5] -> зеркало_бенчмарк.json"""
+"""Оценка сделок: доходность бумаги за H мес. после справки минус индекс МосБиржи (Б), минус свой портфель, взвешенный
+по стоимости (В), и минус похожие бумаги (Х, характеристический бенчмарк по Daniel и др., 1997); контроль — индексные
+фонды; блочный бутстрэп по месяцам. python3 mirror_bench.py [порог_выборочности=0.5] [группы: 3 | 5 | w] [H=3] — вывод в консоль"""
 import csv
-import json
 import sys
 from collections import Counter, defaultdict
 
@@ -56,7 +55,7 @@ def buckets(d0):
                 c[x] = (np.mean(t), p12)
         if len(c) < 30:
             chars[d0] = None
-        elif NB == "w":                          # размер по весу в индексе: ≥ 1,5% / в индексе / вне индекса (ревью 2, Н1)
+        elif NB == "w":                          # размер по весу в индексе: ≥ 1,5% / в индексе / вне индекса
             w = bw.get(d0[:7], {})
             tw = sum(w.values()) or 1
             qm = np.percentile([v[1] for v in c.values()], [100 / 3, 200 / 3])
@@ -172,4 +171,3 @@ g = [gap(st) for st in IDX]
 full = np.mean([d for v in by.values() for d in v[0]]) - np.mean([d for v in by.values() for d in v[1]])
 print(f"\nасимметрия у активных (покупки − продажи), мерка {COL}: {full:+.2f} [{np.percentile(g, 2.5):+.2f}; {np.percentile(g, 97.5):+.2f}]")
 res["асимметрия_Х"] = [float(full), float(np.percentile(g, 2.5)), float(np.percentile(g, 97.5))]
-(ROOT / f"зеркало_бенчмарк_{int(TH * 100)}{'' if NB == '3' else f'_{NB}'}{'' if H == 3 else f'_h{H}'}.json").write_text(json.dumps(res, ensure_ascii=False, indent=1))

@@ -1,101 +1,101 @@
-"""Числа решения для записки (30.09) на очищенных доходностях (мерка Х) и исправленной отчётности: проданная бумага
-против трёх случайных бумаг того же портфеля; правило «без данных» (правила_prior.json: модель писала его только из
-знаний, без данных и без указания периода) против выбора управляющего и против жребия, по периодам и кварталам;
-экономика с пределом «заменить не больше позиции подсказанной бумаги». Модель не вызывается.
-python3 solution_adj.py -> рисунки/р8_2_правило.png, рисунки/числа_р8.json"""
-import contextlib
+"""Числа решения для записки (разделы 3–6): проданная бумага против трёх случайных бумаг того же портфеля; исходное
+правило «без данных» (правила_prior.json) против выбора управляющего и против жребия — по периодам и кварталам, на всех
+1 139 продажах и без крупных сокращений; экономика с пределом «заменить не больше позиции подсказанной бумаги».
+Доходности очищены так же, как в оценке сделок (cases.py). Модель не вызывается.
+python3 solution_adj.py -> рисунки/рис5_правило.png, рисунки/числа_правило.json"""
 import csv
-import io
 import json
-import re
-import runpy
-import sys
 from collections import defaultdict
-from pathlib import Path
 
 import numpy as np
 
-sys.argv = ["adj_walk.py"]
-with contextlib.redirect_stdout(io.StringIO()):
-    g = runpy.run_path(str(Path(__file__).with_name("adj_walk.py")), run_name="x")
-load = g["load"]
-import agent_replay as A  # noqa: E402
-import rulegen as R  # noqa: E402
-from robust import ROOT  # noqa: E402
+import cases as C
+import rule as A
+from robust import INDEX, MECH, ROOT, UNSURE
 
-TEST = tuple(t + "_fix" for t in ("_r2", "_r3", "_2025h2", ""))
+ALL = C.load()
+prior = A.picker([r["правило"] for r in json.loads((ROOT / "правила_prior.json").read_text())])
+avg = lambda x: np.mean(list(x["r"].values()))
+for x in ALL:
+    x["prior"], x["q"] = prior(x), f"{x['m'][:5]}{(int(x['m'][5:]) - 1) // 3 * 3 + 1:02d}"
+gap = lambda x: (x["r"][x["pm"]] - x["r"][x["prior"]]) * 100               # правило против управляющего
+vs_rand = lambda x: (avg(x) - x["r"][x["prior"]]) * 100                     # правило против жребия из 4
+pm_vs_3 = lambda x: (x["r"][x["pm"]] - np.mean([v for L, v in x["r"].items() if L != x["pm"]])) * 100
+mgr_vs_rand = lambda x: (avg(x) - x["r"][x["pm"]]) * 100                    # минус — управляющий хуже жребия
 
 
-def boot(rows, val, H=3, seed=4):
+def boot(rows, val):
+    d, lo, hi, n = A.block_boot([(x["m"], val(x)) for x in rows])
     by = defaultdict(list)
     for x in rows:
         by[x["m"]].append(val(x))
-    ms = sorted(by)
-    rng = np.random.default_rng(seed)
-    est = [np.mean([d for st in rng.integers(0, len(ms), -(-len(ms) // H)) for k in range(H) for d in by[ms[(st + k) % len(ms)]]])
-           for _ in range(2000)]
-    return {"D": round(float(np.mean([d for v in by.values() for d in v])), 2), "lo": round(float(np.percentile(est, 2.5)), 2),
-            "hi": round(float(np.percentile(est, 97.5)), 2), "n": sum(map(len, by.values())),
-            "мес_в_плюсе": f"{sum(np.mean(v) > 0 for v in by.values())}/{len(ms)}"}
+    return {"D": d, "lo": lo, "hi": hi, "n": n, "мес_в_плюсе": f"{sum(np.mean(v) > 0 for v in by.values())}/{len(by)}"}
 
 
-prior = A.picker([r["правило"] for r in json.loads((ROOT / "правила_prior.json").read_text())])
-avg = lambda x: np.mean(list(x["r"].values()))
-te, tr = load(TEST, True), load(("_r1_fix",), True)
-ALL = tr + te
-for x in ALL:
-    x["prior"], x["q"] = prior(x), f"{x['m'][:5]}{(int(x['m'][5:]) - 1) // 3 * 3 + 1:02d}"
-gap = lambda x: (x["r"][x["pm"]] - x["r"][x["prior"]]) * 100
-nums = {"проданная против 3 других бумаг портфеля, все годы": boot(ALL, lambda x: (x["r"][x["pm"]] - np.mean([v for L, v in x["r"].items() if L != x["pm"]])) * 100),
-        "управляющий против жребия из 4, все годы": boot(ALL, lambda x: (x["r"][x["pm"]] - avg(x)) * 100),
+small = [x for x in ALL if not x["крупное"]]
+nums = {"проданная против 3 других бумаг портфеля, все годы": boot(ALL, pm_vs_3),
+        "управляющий против жребия из 4, все годы": boot(ALL, lambda x: -mgr_vs_rand(x)),
         "правило без данных, все годы": boot(ALL, gap),
-        "правило без данных против жребия, все годы": boot(ALL, lambda x: (avg(x) - x["r"][x["prior"]]) * 100),
+        "правило без данных против жребия, все годы": boot(ALL, vs_rand),
         "правило без данных, все годы без 2026": boot([x for x in ALL if x["m"] < "2026"], gap),
-        "правило без данных, 07.2023–06.2026": boot(te, gap)}
+        "правило без данных, 07.2023–06.2026": boot([x for x in ALL if x["m"] >= "2023-07"], gap),
+        "крупных сокращений (от 7% портфеля) в выборке": sum(x["крупное"] for x in ALL),
+        "без крупных сокращений: проданная против 3 других": boot(small, pm_vs_3),
+        "без крупных сокращений: правило без данных": boot(small, gap),
+        "без крупных сокращений: правило против жребия": boot(small, vs_rand)}
 for lo, hi in (("2022-10", "2023-06"), ("2023-07", "2024-06"), ("2024-07", "2025-06"), ("2025-07", "2026-06")):
-    sub = [x for x in ALL if lo <= x["m"] <= hi]
-    nums[f"правило без данных {lo}…{hi}"] = boot(sub, gap)
-    nums[f"правило без данных против жребия {lo}…{hi}"] = boot(sub, lambda x: (avg(x) - x["r"][x["prior"]]) * 100)
-    nums[f"управляющий против жребия {lo}…{hi}"] = boot(sub, lambda x: (avg(x) - x["r"][x["pm"]]) * 100)
+    for tag, rows in (("", ALL), ("без крупных сокращений: ", small)):
+        sub = [x for x in rows if lo <= x["m"] <= hi]
+        nums[f"{tag}правило без данных {lo}…{hi}"] = boot(sub, gap)
+        nums[f"{tag}правило без данных против жребия {lo}…{hi}"] = boot(sub, vs_rand)
+        nums[f"{tag}управляющий против жребия {lo}…{hi}"] = boot(sub, mgr_vs_rand)
 qs = defaultdict(list)
 for x in ALL:
     qs[x["q"]].append(gap(x))
 nums["prior по кварталам"] = {q: [round(float(np.mean(v)), 2), len(v)] for q, v in sorted(qs.items())}
 
 # Экономика: выигрыш на рубль продажи с пределом «заменить не больше позиции подсказанной бумаги»
-nav, amt = defaultdict(float), {}
+nav, amt, npos = defaultdict(float), {}, defaultdict(int)
 for p in csv.DictReader(open(ROOT / "позиции.csv", encoding="utf-8")):
     nav[(p["фонд"], p["дата"])] += float(p["value"] or 0)
-for e in csv.DictReader(open(ROOT / "сделки.csv", encoding="utf-8")):
+    npos[(p["фонд"], p["дата"])] += 1
+ev = list(csv.DictReader(open(ROOT / "сделки.csv", encoding="utf-8")))
+for e in ev:
     if e["сторона"] == "продажа":
         amt[(e["фонд"], e["d0"], e["d1"], e["secid"])] = float(e["объём_руб"] or 0)
-case = {x["text"]: c for t in TEST + ("_r1_fix",) for x, c in zip(R.load((t,)), json.loads((ROOT / f"sellrank_cases{t}.json").read_text()))}
-for k in ("prior",):
-    num = unc = den = 0.0
-    for x in ALL:
-        c = case[x["text"]]
-        a = amt.get((c["фонд"], c["d0"], c["d1"], next(b["secid"] for b in c["бумаги"] if b["продана"])))
-        N = nav.get((c["фонд"], c["d0"]))
-        if not a or not N:
-            continue
-        L = x[k]
-        share = float(re.search(rf"Бумага {L}: доля в портфеле ([\d.]+)%", x["text"]).group(1)) / 100
-        d = gap(x)
-        num += (min(a, share * N) if L != x["pm"] else a) * d
-        unc += a * d
-        den += a
-    per = num / den
-    # доля выборочных продаж в СЧА акций за месяц: медиана 2,7%, среднее 4,1% (sellrank_check.py, 07.2025–06.2026)
-    nums[f"экономика {k}"] = {"п.п._на_рубль_3м_с_пределом": round(per, 2), "без_предела": round(unc / den, 2),
-                              "годовых_медиана_2.7%": round(per * 0.027 * 12, 2), "годовых_среднее_4.1%": round(per * 0.041 * 12, 2)}
-share = lambda x, L: float(re.search(rf"Бумага {L}: доля в портфеле ([\d.]+)%", x["text"]).group(1))
-for k in ("prior",):
-    dif = [x for x in ALL if x[k] != x["pm"]]
-    nums[f"доли позиций {k}: подсказка / проданная, %"] = [round(float(np.mean([share(x, x[k]) for x in dif])), 1),
-                                                         round(float(np.mean([share(x, x["pm"]) for x in dif])), 1), len(dif)]
+num = unc = den = 0.0
+for x in ALL:
+    a, N = amt.get((x["фонд"], x["d0"], x["d1"], x["sold"])), nav.get((x["фонд"], x["d0"]))
+    if not a or not N:
+        continue
+    L, d = x["prior"], gap(x)
+    num += (min(a, x["fe"][L]["доля"] / 100 * N) if L != x["pm"] else a) * d
+    unc += a * d
+    den += a
+per = num / den
+# доля выборочных продаж в стоимости акций фонда за месяц: активные фонды, фонд-месяцы 07.2025–06.2026
+act = [e for e in ev if not any(k in e["фонд"] for k in INDEX + UNSURE + MECH)]
+ns = defaultdict(int)
+for e in act:
+    ns[(e["фонд"], e["d1"])] += e["сторона"] == "продажа"
+sold, base = defaultdict(float), {}
+for e in act:
+    k = (e["фонд"], e["d1"])
+    if "2025-07" <= e["d1"][:7] <= "2026-06":
+        base[k] = nav.get((e["фонд"], e["d0"]), 0)
+        if e["сторона"] == "продажа" and ns[k] <= 0.5 * npos.get((e["фонд"], e["d0"]), 1):
+            sold[k] += float(e["объём_руб"] or 0)
+turn = [sold[k] / v for k, v in base.items() if v > 0]
+t_med, t_mean = float(np.median(turn)), float(np.mean(turn))
+nums["экономика prior"] = {"п.п._на_рубль_3м_с_пределом": round(per, 2), "без_предела": round(unc / den, 2),
+                           "выборочные_продажи_в_месяц_медиана_%": round(t_med * 100, 2), "среднее_%": round(t_mean * 100, 2),
+                           "годовых_медиана": round(per * t_med * 12, 2), "годовых_среднее": round(per * t_mean * 12, 2)}
+dif = [x for x in ALL if x["prior"] != x["pm"]]
+nums["доли позиций prior: подсказка / проданная, %"] = [round(float(np.mean([x["fe"][x["prior"]]["доля"] for x in dif])), 1),
+                                                     round(float(np.mean([x["fe"][x["pm"]]["доля"] for x in dif])), 1), len(dif)]
 assert nums["правило без данных, все годы"]["n"] == len(ALL) == sum(v[1] for v in nums["prior по кварталам"].values())
 
-# Рисунок 3. Правило без данных против управляющего по кварталам
+# Рисунок 5. Правило без данных против управляющего по кварталам
 import matplotlib  # noqa: E402
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
@@ -135,6 +135,6 @@ fig.text(0.01, 0.01, f"Квартал продажи; результат за 3 
          fontsize=7.8, color=MUTED, wrap=True)
 fig.subplots_adjust(bottom=0.25, top=0.97, left=0.13, right=0.98)
 OUT = ROOT.parents[1] / "рисунки"
-fig.savefig(OUT / "р8_2_правило.png", dpi=220, facecolor="white")
-(OUT / "числа_р8.json").write_text(json.dumps(nums, ensure_ascii=False, indent=1))
+fig.savefig(OUT / "рис5_правило.png", dpi=220, facecolor="white")
+(OUT / "числа_правило.json").write_text(json.dumps(nums, ensure_ascii=False, indent=1))
 print(json.dumps(nums, ensure_ascii=False, indent=1))

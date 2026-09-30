@@ -1,13 +1,17 @@
 """Знают ли управляющие про финансовый стресс: где в своём портфеле по баллу правила стоят купленные и проданные бумаги.
-Перцентиль балла бумаги среди всех позиций фонда на дату d0 (1 — самая «стрессовая», 0,5 — как случайно).
-python3 knowledge_check.py"""
+Перцентиль балла бумаги среди всех позиций фонда на дату d0 (1 — самая «стрессовая», 0,5 — как случайно); интервал —
+блочный бутстрэп по месяцам. python3 knowledge_check.py -> знание_стресса.json"""
+import contextlib
 import csv
 import functools
+import io
 import json
+import runpy
+import sys
 from collections import defaultdict
+from pathlib import Path
 
-import numpy as np
-
+import rule as A
 import rulegen as R
 import sellrank as S
 import trades as T
@@ -16,8 +20,7 @@ from robust import ROOT, selective
 S.fund_table = functools.lru_cache(maxsize=None)(S.fund_table)
 hold, px, div = T.load()
 rules = [r["правило"] for r in json.loads((ROOT / "правила_prior.json").read_text())]   # исходное правило записки
-pts = lambda f: sum(c["баллы"] for rule in rules for c in rule if f.get(c["признак"]) is not None and
-                    ((c["знак"] == ">" and f[c["признак"]] > c["порог"]) or (c["знак"] == "<" and f[c["признак"]] < c["порог"])))
+pts = lambda f: A.points(rules, f)
 
 
 @functools.lru_cache(maxsize=None)
@@ -29,8 +32,6 @@ def score(x, d0):
 
 ev = selective(list(csv.DictReader(open(ROOT / "сделки.csv", encoding="utf-8"))))
 # та же выборка, что в разделе 3 записки: сделки активных фондов с известным исходом, без сокращений позиций от 7%
-import contextlib, io, runpy, sys
-from pathlib import Path
 sys.argv = ["mirror_bench.py", "0.5", "3"]
 with contextlib.redirect_stdout(io.StringIO()):
     MB = runpy.run_path(str(Path(__file__).with_name("mirror_bench.py")))["rows"]
@@ -47,14 +48,16 @@ for e in ev:
         continue
     pct = (sum(v < me for v in sc) + 0.5 * sum(v == me for v in sc)) / len(sc)
     kind = "покупка" if e["сторона"] == "покупка" else ("выход" if e["полностью"] == "True" else "сокращение")
-    res[(kind, d0[:4])].append(pct)
-    res[(kind, "все")].append(pct)
-rng = np.random.default_rng(1)
+    res[(kind, d0[:4])].append((e["d1"][:7], pct))
+    res[(kind, "все")].append((e["d1"][:7], pct))
+out = {}
 for kind in ("покупка", "сокращение", "выход"):
     for y in ("все", "2022", "2023", "2024", "2025", "2026"):
-        v = np.array(res.get((kind, y), []))
+        v = res.get((kind, y), [])
         if len(v) < 20:
             continue
-        b = [rng.choice(v, len(v)).mean() for _ in range(2000)]
-        print(f"{kind:<11} {y:<4} n={len(v):>5}  перцентиль «стрессовости» {v.mean():.3f} [{np.percentile(b, 2.5):.3f}; {np.percentile(b, 97.5):.3f}]  (0,5 — как случайно)")
-(ROOT / "знание_стресса.json").write_text(json.dumps({f"{k[0]}|{k[1]}": float(np.mean(v)) for k, v in res.items()}, ensure_ascii=False, indent=1))
+        pairs = [(m, x * 100) for m, x in v]                      # в процентах: block_boot округляет до сотых
+        d, lo, hi, n = A.block_boot(pairs)
+        out[f"{kind}|{y}"] = [round(d / 100, 3), round(lo / 100, 3), round(hi / 100, 3), n]
+        print(f"{kind:<11} {y:<4} n={n:>5}  перцентиль «стрессовости» {d / 100:.3f} [{lo / 100:.3f}; {hi / 100:.3f}]  (0,5 — как случайно)")
+(ROOT / "знание_стресса.json").write_text(json.dumps(out, ensure_ascii=False, indent=1))

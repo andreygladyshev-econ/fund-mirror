@@ -1,7 +1,8 @@
 """Ежемесячный цикл «Зеркала рынка»: данные → знания → решения (записка, раздел 5, рисунок 3).
 python3 mirror_cycle.py ГГГГ-ММ [--fetch] [--llm] [--quarter]
   --fetch    докачать справки всех УК, прочитать их (шаблоны и ИИ-читатель с двумя проверками), обновить цены и сделки
-  --llm      в квартальном контуре спросить ИИ-аналитика (локальная модель): записка комитету и новая версия правила
+  --llm      в квартальном контуре спросить ИИ-аналитика (локальная модель): записка комитету и новая версия правила;
+             без флага берутся записка и версия, уже сохранённые для этого месяца, поэтому повторный запуск даёт тот же выпуск
   --quarter  выполнить квартальный контур не в начале квартала
 Выход: данные/зеркало/выпуски/ГГГГ-ММ/сводка.md, списки.md, списки.csv; состояние правила — зеркало_состояние.json"""
 import contextlib
@@ -18,7 +19,8 @@ from pathlib import Path
 import numpy as np
 
 import agent_mirror as M
-import agent_replay as A
+import cases as C
+import rule as A
 import rulegen as R
 import sellrank as S
 import trades as T
@@ -26,7 +28,7 @@ from robust import INDEX, MECH, ROOT, UNSURE
 
 HERE = Path(__file__).parent
 STATE = ROOT / "зеркало_состояние.json"
-BASE = ("_r1_fix", "_r2_fix", "_r3_fix", "_2025h2_fix", "_fix")        # продажи 10.2022–06.2026 с известным исходом
+BASE = C.TAGS                                                    # продажи 10.2022–06.2026 с известным исходом
 UKS = ("tcap", "arsagera", "sistema", "vim", "alfa", "dohod", "psb", "akbars", "rshb")   # «Первая» и «Ингосстрах» — через браузер
 MONTH = sys.argv[1]
 MIN_SHARE = 0.005                                               # позиции меньше 0,5% портфеля денег не освобождают
@@ -73,18 +75,36 @@ def tags_new():
 
 
 def mirror():
-    sys.argv, argv = ["adj_walk.py"], sys.argv
-    with contextlib.redirect_stdout(io.StringIO()):
-        g = runpy.run_path(str(HERE / "adj_walk.py"), run_name="x")
-    sys.argv = argv
-    return g["load"](BASE + tags_new(), True)
+    return C.load(BASE + tags_new())
+
+
+def prior_rule():
+    return [r["правило"] for r in json.loads((ROOT / "правила_prior.json").read_text())]
+
+
+def state_at(month):
+    """Правило, действующее в месяце month, по истории квартальных проверок до этого месяца включительно (повторный
+    запуск любого месяца даёт тот же ответ, сколько бы проверок ни было записано позже)."""
+    st = json.loads(STATE.read_text()) if STATE.exists() else {"история": []}
+    rule, since, on = prior_rule(), "исходная версия", True
+    for h in sorted(st["история"], key=lambda h: h["месяц"]):
+        if h["месяц"] > month:
+            break
+        if h["заменено"]:
+            rule, since = h["новая_версия"], h["месяц"]
+        on = h["включено"]
+    return {"правило": rule, "действует_с": since, "включено": on, "история": st["история"]}
 
 
 def knowledge(ALL):
-    """Контур «знания»: сводка зеркала, записка ИИ-аналитика, новая версия правила, проверка по году продаж."""
-    prior = [r["правило"] for r in json.loads((ROOT / "правила_prior.json").read_text())]
-    st = json.loads(STATE.read_text()) if STATE.exists() else {"правило": prior, "действует_с": "исходная версия",
-                                                                 "включено": True, "история": []}
+    """Контур «знания»: сводка зеркала, записка ИИ-аналитика, новая версия правила, проверка по году продаж.
+    Новая версия заменяет действующую, только если лучше на A.MARGIN п.п. и больше; подсказки выключаются, если
+    действующее правило на том же году хуже выбора управляющих. Без --llm берутся записка и версия, уже сохранённые
+    для этого месяца (если есть), — так выпуск воспроизводится без модели."""
+    old = json.loads(STATE.read_text())["история"] if STATE.exists() else []
+    hist = [h for h in old if h["месяц"] != MONTH]
+    saved = next((h for h in old if h["месяц"] == MONTH), None)
+    st = state_at(A.shift(MONTH, -1))
     year = [x for x in ALL if A.shift(MONTH, -15) <= x["m"] <= A.shift(MONTH, -4)]
     table, n = M.summary(ALL, MONTH)
     memo, new = "", []
@@ -99,16 +119,20 @@ def knowledge(ALL):
                 new += [rule] if rule else []
             except Exception:  # noqa: BLE001
                 pass
+    elif saved:
+        memo, new = saved["записка"], saved["новая_версия"]
     g_cur = A.gain(year, A.picker(st["правило"]))
     g_new = A.gain(year, A.picker(new)) if new else float("nan")
-    changed = bool(new) and g_new > g_cur
-    if changed:
-        st["правило"], st["действует_с"] = new, MONTH
-    st["включено"] = max(v for v in (g_cur, g_new) if v == v) >= 0
-    st["история"].append({"месяц": MONTH, "продаж_за_год": len(year), "действующее": round(g_cur, 2),
-                          "новое": None if g_new != g_new else round(g_new, 2), "заменено": changed,
-                          "включено": st["включено"], "записка": memo, "новая_версия": new})
-    STATE.write_text(json.dumps(st, ensure_ascii=False, indent=1))
+    changed = bool(new) and g_new >= g_cur + A.MARGIN
+    hist.append({"месяц": MONTH, "продаж_за_год": len(year), "действующее": round(g_cur, 2),
+                 "новое": None if g_new != g_new else round(g_new, 2), "заменено": changed,
+                 "включено": (g_new if changed else g_cur) >= 0, "записка": memo, "новая_версия": new})
+    hist.sort(key=lambda h: h["месяц"])
+    STATE.write_text(json.dumps({"история": hist}, ensure_ascii=False, indent=1))
+    last = state_at(hist[-1]["месяц"])                      # верхние поля файла — правило на последнюю проверку
+    STATE.write_text(json.dumps({k: last[k] for k in ("правило", "действует_с", "включено")} | {"история": hist},
+                                ensure_ascii=False, indent=1))
+    st = state_at(MONTH)
     return st, table, n, memo
 
 
@@ -135,8 +159,7 @@ def decisions(st):
     hold, px, div = T.load()
     S.fund_table = functools.lru_cache(maxsize=None)(S.fund_table)
     rules = st["правило"]
-    pts = lambda fe: sum(c["баллы"] for rule in rules for c in rule if fe.get(c["признак"]) is not None and
-                         ((c["знак"] == ">" and fe[c["признак"]] > c["порог"]) or (c["знак"] == "<" and fe[c["признак"]] < c["порог"])))
+    pts = lambda fe: A.points(rules, fe)
     lists = {}
     for (f, d), h in sorted(hold.items()):
         if not d.startswith(MONTH) or any(k in f for k in INDEX + UNSURE + MECH):
@@ -167,13 +190,15 @@ def teams():
     lo = A.shift(last, -11)
     act = [r for r in rows if lo <= r["m"] <= last and not r["индексный"] and r["вид"] != "сокращение ≥ 7%"
            and not any(k in r["фонд"] for k in UNSURE + MECH)]
-    out = {}
+    out, half = {}, []
     for name in sorted({uk.get(r["фонд"], "?") for r in act}) + ["весь рынок"]:
         sub = act if name == "весь рынок" else [r for r in act if uk.get(r["фонд"]) == name]
-        b = [r["Х"] for r in sub if r["сторона"] == "покупка"]
-        s_ = [r["Х"] for r in sub if r["сторона"] == "продажа"]
-        out[name] = (len(b), float(np.mean(b)) if b else None, len(s_), float(np.mean(s_)) if s_ else None)
-    return lo, last, out
+        b = [(r["m"], r["Х"]) for r in sub if r["сторона"] == "покупка"]
+        s_ = [(r["m"], r["Х"]) for r in sub if r["сторона"] == "продажа"]
+        out[name] = (len(b), float(np.mean([v for _, v in b])) if b else None, len(s_), float(np.mean([v for _, v in s_])) if s_ else None)
+        if name != "весь рынок":
+            half += [(hi - lo) / 2 for x in (b, s_) if len(x) >= 20 for _, lo, hi, _ in [A.block_boot(x)]]
+    return lo, last, out, (min(half), max(half)) if half else None
 
 
 def report(m_out, added, st, table, n, memo, lists, ALL):
@@ -200,7 +225,7 @@ def report(m_out, added, st, table, n, memo, lists, ALL):
             md.append(f"| {k} | {r['secid']} | {fmt(r['доля'])} | {fmt(r['балл'])} | {r['что_отмечает'] or 'нет'} |")
         md += [f"Ещё {len(rows) - 5} бумаг: в списки.csv." if len(rows) > 5 else "", ""]
     (OUT / "списки.md").write_text("\n".join(md), encoding="utf-8")
-    last = st["история"][-1] if st["история"] else {}
+    last = ([h for h in st["история"] if h["месяц"] <= MONTH] or [{}])[-1]
     note = {-1: f"0 (продажи {m_out} уже в зеркале)", 0: f"0 (исход продаж {m_out} ещё неизвестен)"}.get(added, str(added))
     sv = [f"# Зеркало рынка · выпуск {MONTH}", "",
           "## Данные", f"- Активных фондов со справкой за месяц: {len(lists)}.",
@@ -209,20 +234,26 @@ def report(m_out, added, st, table, n, memo, lists, ALL):
           f"- Квартальная проверка {last.get('месяц', 'не проводилась')} на продажах рынка за год ({last.get('продаж_за_год')}): "
           f"прежнее правило {num(last['действующее']) if last.get('действующее') is not None else 'н/д'} п.п. за квартал против выбора "
           f"управляющих, новая версия {num(last['новое']) if last.get('новое') is not None else 'не предлагалась'}; "
-          f"заменено: {'да' if last.get('заменено') else 'нет'}.",
+          f"заменено: {'да' if last.get('заменено') else 'нет'} (замена — если новая версия лучше хотя бы на "
+          f"{A.MARGIN:g} п.п.).",
           f"- Действующее правило на том же году против случайной бумаги того же портфеля: {num(vs_rand)} п.п."
-          + (" Правило выбрано на этом же году, поэтому оценка завышена; честная проверка идёт вперёд во времени."
-             if st["действует_с"] == MONTH else ""), "",
+          + (" Правило выбрано по продажам, которые входят в этот год, поэтому оценка завышена; честная проверка идёт "
+             "вперёд во времени." if st["действует_с"] != "исходная версия" and A.shift(st["действует_с"], 12) > MONTH else ""), "",
           "## Какие признаки помогали выбрать, что продать", "Насколько бумага с самым выраженным признаком отставала от "
-          f"случайной бумаги того же портфеля, п.п. (последний год; год до него), {n} продаж:", "", table, ""]
+          f"случайной бумаги того же портфеля, п.п. (последний год; год до него); продаж за последний год: {n}.", "",
+          re.sub(r"(\d)\.(\d)", r"\1,\2", table), ""]
     if memo:
         sv += ["## Записка ИИ-аналитика", "", memo, ""]
-    lo, hi, tm = teams()
+        if not last.get("заменено"):
+            sv += ["Предложенная в записке версия правила не принята: на продажах рынка за год она не лучше действующей "
+                   f"хотя бы на {A.MARGIN:g} п.п.", ""]
+    lo, hi, tm, half = teams()
     f1 = lambda v: "н/д" if v is None else num(v)
     sv += [f"## Покупки и продажи команд на фоне рынка ({lo}…{hi}, исход известен)", "",
            "Насколько бумага за 3 месяца после сделки выросла быстрее похожих, п.п.: для покупки плюс хорошо, для продажи "
            "плюс значит, что продали бумагу, которая потом обогнала похожие. Сокращения позиций от 7% не оцениваются. По "
-           "одной компании оценка шумная (интервал 3–6 п.п.); точный отчёт строится по внутренним сделкам компании.", "",
+           "одной компании оценка шумная" + (f" (95% интервал ± {num(half[0]).lstrip('+')}…{num(half[1]).lstrip('+')} п.п.)" if half else "")
+           + "; точный отчёт строится по внутренним сделкам компании.", "",
            "| Компания | Покупок | Купленные против похожих | Продаж | Проданные против похожих |", "|---|---|---|---|---|"]
     sv += [f"| {k} | {v[0]} | {f1(v[1])} | {v[2]} | {f1(v[3])} |" for k, v in tm.items()] + [""]
     sv += ["## Списки кандидатов на продажу", "", "списки.md (первые 5 бумаг по каждому фонду), списки.csv (все бумаги)."]
@@ -236,9 +267,7 @@ if __name__ == "__main__":
     if quarter:
         st, table, n, memo = knowledge(ALL)
     else:
-        prior = [r["правило"] for r in json.loads((ROOT / "правила_prior.json").read_text())]
-        st = json.loads(STATE.read_text()) if STATE.exists() else {"правило": prior, "действует_с": "исходная версия",
-                                                                     "включено": True, "история": []}
+        st = state_at(MONTH)
         (table, n), memo = M.summary(ALL, MONTH), ""
     lists = decisions(st)
     report(m_out, added, st, table, n, memo, lists, ALL)

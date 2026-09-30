@@ -90,7 +90,7 @@ def main():
             w.writerow([rg, reg2.get(rg, "")])
     print(f"рег. номеров {len(regs)}, найдено тикеров {sum(1 for r in regs if reg2.get(r))}", flush=True)
     dates = sorted({date.fromisoformat(p["дата"]) for p in pos})
-    last = date.today() - timedelta(days=1)                   # последний завершённый торговый день (было зашито 25.09.2026)
+    last = date.today() - timedelta(days=1)                   # последний завершённый торговый день
     ends = sorted(set(month_ends(dates[0], last)) | set(dates))
     with open(ROOT / "цены.csv", "w", newline="", encoding="utf-8") as fh:
         w = csv.writer(fh)
@@ -107,15 +107,13 @@ def smartlab_divs(secid):
     """История выплат с smart-lab.ru/q/<тикер>/dividend/ (ISS перестал отдавать /securities/<тикер>/dividends:
     с осени 2026 там карточка бумаги). Строка: тикер, дата T-1, дата отсечки, период, дивиденд, …"""
     import re
-    import ssl
-    ctx = ssl.create_default_context()
-    ctx.check_hostname, ctx.verify_mode = False, ssl.CERT_NONE
+    from fetch import urlopen
     t = None
     for page in [secid] + ([secid[:-1]] if secid.endswith("P") else []):   # у привилегированных нет своей страницы
         for k in range(3):
             try:
-                t = urllib.request.urlopen(urllib.request.Request(f"https://smart-lab.ru/q/{page}/dividend/", headers={"User-Agent": "Mozilla/5.0"}),
-                                           timeout=60, context=ctx).read().decode("utf-8", "ignore")
+                t = urlopen(urllib.request.Request(f"https://smart-lab.ru/q/{page}/dividend/", headers={"User-Agent": "Mozilla/5.0"}),
+                            timeout=60).read().decode("utf-8", "ignore")
                 break
             except urllib.error.HTTPError as e:
                 if e.code == 404:

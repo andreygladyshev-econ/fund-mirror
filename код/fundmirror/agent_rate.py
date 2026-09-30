@@ -1,20 +1,16 @@
-"""Агент «Зеркало рынка» (план проверки записан до запуска, 29.09.2026): каждый квартал модель видит только дату, ключевую ставку и
+"""Агент «Зеркало рынка» (план проверки — в README): каждый квартал модель видит только дату, ключевую ставку и
 продажи рынка с известным исходом за последние 12 месяцев, предлагает версию правила; программа оставляет версию, лучшую
-на последних известных продажах, или выключает подсказки. Исходы — очищенные доходности (мерка Х), отчётность *_fix.
+на последних известных продажах, или выключает подсказки. Исходы — очищенные доходности (cases.py).
 python3 agent_rate.py run | score"""
-import contextlib
-import io
 import json
 import random
 import re
-import runpy
 import sys
-from collections import defaultdict
-from pathlib import Path
 
 import numpy as np
 
-import agent_replay as A
+import cases as C
+import rule as A
 import rulegen as R
 from robust import ROOT
 
@@ -34,10 +30,7 @@ def rate(month):
 
 
 def load_all():
-    sys.argv = ["adj_walk.py"]
-    with contextlib.redirect_stdout(io.StringIO()):
-        g = runpy.run_path(str(Path(__file__).with_name("adj_walk.py")), run_name="x")
-    return g["load"](tuple(t + "_fix" for t in ("_r1", "_r2", "_r3", "_2025h2", "")), True)
+    return C.load()
 
 
 def prompt(sample, q):
@@ -123,17 +116,8 @@ def score():
             ag = pa(x) if d["сигнал_включён"] else x["pm"]
             rows.append({"m": x["m"], "q": q, "агент": (x["r"][x["pm"]] - x["r"][ag]) * 100,
                          "неизменное": (x["r"][x["pm"]] - x["r"][prior(x)]) * 100})
-    rng = np.random.default_rng(4)
-
-    def boot(key, H=3):
-        by = defaultdict(list)
-        for r in rows:
-            by[r["m"]].append(key(r))
-        ms = sorted(by)
-        est = [np.mean([v for st in rng.integers(0, len(ms), -(-len(ms) // H)) for k in range(H) for v in by[ms[(st + k) % len(ms)]]])
-               for _ in range(2000)]
-        return [round(float(np.mean([key(r) for r in rows])), 2), round(float(np.percentile(est, 2.5)), 2),
-                round(float(np.percentile(est, 97.5)), 2)]
+    def boot(key):
+        return list(A.block_boot([(r["m"], key(r)) for r in rows])[:3])
     res = {"продаж": len(rows), "агент против управляющего": boot(lambda r: r["агент"]),
            "неизменное против управляющего": boot(lambda r: r["неизменное"]),
            "агент минус неизменное": boot(lambda r: r["агент"] - r["неизменное"]),
@@ -172,7 +156,7 @@ def score():
     fig.text(0.01, 0.01, f"Квартал продажи; результат за 3 месяца за вычетом роста похожих бумаг; {res['продаж']} продаж 07.2023–06.2026. "
              "Агент в начале квартала знал только дату, ставку и уже известные исходы.", fontsize=7.8, color="#52514e", wrap=True)
     fig.subplots_adjust(bottom=0.24, top=0.97, left=0.13, right=0.99)
-    fig.savefig(ROOT.parents[1] / "рисунки" / "р8_4_агент.png", dpi=220, facecolor="white")
+    fig.savefig(ROOT.parents[1] / "рисунки" / "агент_ставка.png", dpi=220, facecolor="white")
 
 
 if __name__ == "__main__":

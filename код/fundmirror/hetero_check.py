@@ -1,4 +1,4 @@
-"""Неоднородность по фондам и компаниям (30.09, по вопросу о корректности рисунка 2 и главного результата).
+"""Неоднородность по фондам и компаниям: держится ли главный результат и рисунок 2 на одной компании.
 1) доля случаев у крупнейших компаний; 2) главный результат (исходное правило против выбора управляющего и против
 жребия): бутстрэп по фондам, равные веса фондов, исключение каждой компании по очереди; 3) рисунок 2: меняет ли знак
 значимая клетка, если убрать любую одну компанию.
@@ -9,12 +9,12 @@ from collections import Counter, defaultdict
 
 import numpy as np
 
-import agent_rate as G
-import agent_replay as A
-from figure_mirror import PER, SIG, pick, res as HEAT
+import cases as C
+import rule as A
+from figure_mirror import PER, SIG, pick, res as HEAT   # импорт заново строит рисунок 2
 from robust import ROOT
 
-ALL = G.load_all()
+ALL = C.load()
 uk = {r["фонд"]: r["ук"] for r in csv.DictReader(open(ROOT / "опись.csv", encoding="utf-8"))}
 for x in ALL:
     x["ук"] = uk.get(x["фонд"], x["фонд"])

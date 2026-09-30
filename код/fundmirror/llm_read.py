@@ -1,18 +1,9 @@
-"""ИИ-читатель справок о СЧА: извлечение таблицы акций языковой моделью и проверка её ответа.
-
-Вопрос: может ли языковая модель без правил, написанных под конкретную УК, извлечь из справки позиции в акциях
-так, чтобы сумма совпала с итогом строки 02.07 («акции российских АО — всего») той же справки?
-Арифметическая сверка делает ответ модели проверяемым: совпало — можно верить, не совпало — справку разбирает
-человек или правило.
-
-Выборка: по одной свежей справке каждого фонда УК, чьи форматы не использовались при разработке правил
-(по умолчанию — ПСБ, АК Барс, Ингосстрах), плюс для сравнения — те же справки, разобранные правилами (parse_scha).
-Модель получает только текст раздела с таблицей акций (pdftotext -layout или строки Excel) и возвращает JSON
-[{"reg": "...", "qty": число, "value": число}].
-
-python3 llm_read.py plan                         # показать выборку, без модели
-python3 llm_read.py run [--model qwen/qwen3.8-27b] # прогон модели -> данные/составы_фондов/llm_read.jsonl
-python3 llm_read.py batch <УК> <модель> [local|openrouter]  # все справки УК -> llm_positions/ (для parse_all)
+"""ИИ-читатель справок о СЧА: извлечение таблицы акций языковой моделью и две проверки её ответа.
+Модель получает только участок справки с таблицей акций (pdftotext -layout или строки Excel) и возвращает JSON
+[{"reg": "...", "qty": число, "value": число}]. Ответ принимается (parse_all.py), только если 1) сумма позиций совпала с
+итогом строки 02.07 справки («акции российских АО — всего») с точностью 0,5% и 2) у каждой позиции количество × цена
+Мосбиржи на дату справки ≈ стоимость (±10%). Не прошедшее проверку разбирает человек. Точность — reader_accuracy.py.
+python3 llm_read.py batch <УК> [модель] [local|openrouter]   # все справки УК -> данные/составы_фондов/llm_positions/
 В месячном цикле (mirror_cycle.py --fetch --llm) batch вызывается только для справок, не прошедших сверку шаблонов.
 """
 import csv
@@ -22,10 +13,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-from parse_scha import _rows, parse, totals
+from parse_scha import _rows, totals
 
 ROOT = Path(__file__).resolve().parents[2] / "данные" / "составы_фондов"
-HELD_OUT = ("ПСБ", "АК Барс", "Ингосстрах-Инвестиции", "РСХБ")   # РСХБ: правила не берут вёрстку (0 из 71)
 PROMPT = """Ниже — фрагмент ежемесячной справки о стоимости чистых активов паевого фонда (форма 0420502), раздел с
 акциями российских акционерных обществ. Выпиши ВСЕ позиции акций. Для каждой: государственный регистрационный номер
 выпуска (например 1-02-00077-A или 10301481B), количество бумаг, стоимость в рублях. Числа — без пробелов, дробная
@@ -77,7 +67,7 @@ _PX = {}
 
 
 def qty_flags(rows, date, tol=0.10):
-    """Вторая сверка ответа модели (ревью С2): количество × цена Мосбиржи на дату справки ≈ стоимость (± tol).
+    """Вторая сверка ответа модели: количество × цена Мосбиржи на дату справки ≈ стоимость (± tol).
     Возвращает позиции, где расхождение больше допуска; позиции без биржевой цены не проверяются."""
     if not _PX:
         lat = str.maketrans("АВСЕНКМОРТХ", "ABCEHKMOPTX")
@@ -126,38 +116,7 @@ def batch(uk, model, provider, only=None):
     print(f"{uk}: сошлось {ok_n} из {len(inv)}")
 
 
-def sample():
-    inv = list(csv.DictReader(open(ROOT / "опись.csv", encoding="utf-8")))
-    last = {}
-    for r in inv:
-        if r["ук"] in HELD_OUT and r["дата"] > last.get(r["фонд"], ("", ""))[0]:
-            last[r["фонд"]] = (r["дата"], r["файл"])
-    return [(f, d, ROOT / p) for f, (d, p) in sorted(last.items())]
-
-
-def main():
-    cmd = sys.argv[1] if len(sys.argv) > 1 else "plan"
-    if cmd == "batch":                            # python3 llm_read.py batch РСХБ deepseek/deepseek-v4-flash openrouter
-        return batch(sys.argv[2], sys.argv[3], sys.argv[4] if len(sys.argv) > 4 else "local")
-    S = sample()
-    if cmd == "plan":
-        for f, d, p in S:
-            tot = totals(p)["shares"]
-            s = sum(x["value"] for x in parse(p))
-            print(f"{f[:40]:<40} {d}  итог 02.07 {tot:>16,.0f}  правила: {s:>16,.0f} {'✓' if tot and abs(s - tot) <= 0.005 * tot else '✗'}  текст {len(text_of(p)):,} симв.")
-        return
-    model = sys.argv[sys.argv.index("--model") + 1] if "--model" in sys.argv else "qwen/qwen3.8-27b"
-    with open(ROOT / "llm_read.jsonl", "a", encoding="utf-8") as fh:
-        for f, d, p in S:
-            tot = totals(p)["shares"]
-            out = ask(model, PROMPT.format(text=text_of(p)))
-            m = re.search(r"\[.*\]", out if isinstance(out, str) else json.dumps(out), re.S)
-            rows = json.loads(m.group(0)) if m else []
-            s = sum(float(x.get("value") or 0) for x in rows)
-            ok = bool(tot) and abs(s - tot) <= 0.005 * tot
-            fh.write(json.dumps({"фонд": f, "дата": d, "модель": model, "позиций": len(rows), "сумма": s, "итог_02_07": tot, "сошлось": ok}, ensure_ascii=False) + "\n")
-            print(f"{f[:40]:<40} {d} модель: {len(rows)} поз., {s:,.0f} / итог {tot:,.0f} {'✓' if ok else '✗'}", flush=True)
-
-
 if __name__ == "__main__":
-    main()
+    if sys.argv[1:2] != ["batch"] or len(sys.argv) < 3:
+        sys.exit(__doc__)
+    batch(sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else "qwen/qwen3.8-27b", sys.argv[4] if len(sys.argv) > 4 else "local")

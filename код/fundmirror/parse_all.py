@@ -30,7 +30,7 @@ if __name__ == "__main__":
         c = ROOT / "llm_positions" / (hashlib.md5(r["файл"].encode()).hexdigest() + ".json")
         if not ok and c.exists() and (j := json.loads(c.read_text()))["сошлось"] and not qty_flags(j["позиции"], r["дата"]):
             # запасной разбор языковой моделью — принимается только при совпадении суммы с итогом 02.07 (llm_read.py)
-            # и второй сверке: количество × цена биржи ≈ стоимость у каждой позиции (с 28.09, ревью С2)
+            # и второй сверке: количество × цена биржи ≈ стоимость у каждой позиции
             pos = [{"reg": x.get("reg", ""), "isin": "", "qty": float(x["qty"]), "value": float(x["value"]), "name": ""} for x in j["позиции"]]
             s, ok, src = j["сумма"], True, "модель"
         chk.append({"ук": r["ук"], "фонд": r["фонд"], "дата": r["дата"], "позиций": len(pos), "сумма": round(s),

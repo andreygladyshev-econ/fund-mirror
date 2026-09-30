@@ -1,17 +1,15 @@
-"""ИИ читает зеркало рынка (план проверки записан до запуска, 30.09.2026). Каждый квартал модель получает дату, ставку и
+"""ИИ читает зеркало рынка (план проверки — в README). Каждый квартал модель получает дату, ставку и
 сводку зеркала: какие признаки слабой бумаги помогали выбрать, что продать, за последний год и за год до него; пишет
 правило на квартал. Вариант Б без модели: версии прогона agent_rate отбираются по году продаж.
 python3 agent_mirror.py run | score"""
 import json
-import random
 import re
 import sys
-from collections import defaultdict
 
 import numpy as np
 
 import agent_rate as G
-import agent_replay as A
+import rule as A
 import rulegen as R
 from robust import ROOT
 
@@ -106,41 +104,40 @@ def score():
         if d["новое"] and g_new > g_old:
             active = d["новое"]
         chosen_b[q] = (A.picker(active), max(v for v in (g_new, g_old) if v == v) >= 0)
-    # конфигурация месячного цикла (mirror_cycle.py): версии М отбираются по году продаж (проверка после основных)
-    active, chosen_c = prior_rules, {}
-    for q in A.QS:
-        cand = json.loads((OUT / f"квартал_{q}.json").read_text())["правило"]
-        year = [x for x in ALL if A.shift(q, -15) <= x["m"] <= A.shift(q, -4)]
-        g_cur, g_new = A.gain(year, A.picker(active)), (A.gain(year, A.picker(cand)) if cand else float("nan"))
-        if cand and g_new > g_cur:
-            active = cand
-        chosen_c[q] = (A.picker(active), max(v for v in (g_cur, g_new) if v == v) >= 0)
+    # конфигурация месячного цикла (mirror_cycle.py): версии М отбираются по году продаж (проверка после основных);
+    # «цикл» — замена при любом превосходстве, «цикл_порог» — только при превосходстве на A.MARGIN п.п. (введено позже)
+    chosen = {}
+    for key, margin in (("цикл", 0.0), ("цикл_порог", A.MARGIN)):
+        active, chosen[key] = prior_rules, {}
+        for q in A.QS:
+            cand = json.loads((OUT / f"квартал_{q}.json").read_text())["правило"]
+            year = [x for x in ALL if A.shift(q, -15) <= x["m"] <= A.shift(q, -4)]
+            g_cur, g_new = A.gain(year, A.picker(active)), (A.gain(year, A.picker(cand)) if cand else float("nan"))
+            if cand and g_new > g_cur + margin:
+                active = cand
+                g_cur = g_new
+            chosen[key][q] = (A.picker(active), g_cur >= 0)
     rows = []
     for q in A.QS:
         dm = json.loads((OUT / f"квартал_{q}.json").read_text())
         pm_ = A.picker(dm["правило"]) if dm["правило"] else prior
         pb, on_b = chosen_b[q]
-        pc, on_c = chosen_c[q]
         for x in [x for x in ALL if q <= x["m"] <= A.shift(q, 2)]:
             g = lambda L: (x["r"][x["pm"]] - x["r"][L]) * 100
-            rows.append({"m": x["m"], "q": q, "М": g(pm_(x)), "Б": g(pb(x)) if on_b else 0.0, "цикл": g(pc(x)) if on_c else 0.0,
-                         "неизменное": g(prior(x))})
-    rng = np.random.default_rng(4)
-
-    def boot(key, H=3):
-        by = defaultdict(list)
-        for r in rows:
-            by[r["m"]].append(key(r))
-        ms = sorted(by)
-        est = [np.mean([v for st in rng.integers(0, len(ms), -(-len(ms) // H)) for k in range(H) for v in by[ms[(st + k) % len(ms)]]])
-               for _ in range(2000)]
-        return [round(float(np.mean([key(r) for r in rows])), 2), round(float(np.percentile(est, 2.5)), 2),
-                round(float(np.percentile(est, 97.5)), 2)]
+            row = {"m": x["m"], "q": q, "М": g(pm_(x)), "Б": g(pb(x)) if on_b else 0.0, "неизменное": g(prior(x))}
+            for key in chosen:
+                pc, on_c = chosen[key][q]
+                row[key] = g(pc(x)) if on_c else 0.0
+            rows.append(row)
+    def boot(key):
+        return list(A.block_boot([(r["m"], key(r)) for r in rows])[:3])
     res = {"продаж": len(rows), "М против управляющего": boot(lambda r: r["М"]),
            "М минус неизменное": boot(lambda r: r["М"] - r["неизменное"]),
            "Б против управляющего": boot(lambda r: r["Б"]), "Б минус неизменное": boot(lambda r: r["Б"] - r["неизменное"]),
            "цикл (М + отбор по году) против управляющего": boot(lambda r: r["цикл"]),
            "цикл минус неизменное": boot(lambda r: r["цикл"] - r["неизменное"]),
+           "цикл с порогом замены 1 п.п. против управляющего": boot(lambda r: r["цикл_порог"]),
+           "цикл с порогом минус неизменное": boot(lambda r: r["цикл_порог"] - r["неизменное"]),
            "неизменное против управляющего": boot(lambda r: r["неизменное"]),
            "по кварталам (М, Б, неизменное)": {q: [round(float(np.mean([r[k] for r in rows if r["q"] == q])), 2)
                                                   for k in ("М", "Б", "неизменное")] for q in A.QS}}
@@ -179,7 +176,7 @@ def score():
              "Агент в начале квартала видел только дату, ставку и сводку зеркала за прошлые годы.", fontsize=7.8,
              color="#52514e", wrap=True)
     fig.subplots_adjust(bottom=0.24, top=0.97, left=0.13, right=0.99)
-    fig.savefig(ROOT.parents[1] / "рисунки" / "р9_агент_зеркало.png", dpi=220, facecolor="white")
+    fig.savefig(ROOT.parents[1] / "рисунки" / "агент_зеркало.png", dpi=220, facecolor="white")
 
 
 if __name__ == "__main__":

@@ -17,6 +17,7 @@ import re
 import ssl
 import sys
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -25,14 +26,31 @@ ROOT = Path(__file__).resolve().parents[2] / "данные" / "составы_ф
 RAW = ROOT / "raw"
 INV = ROOT / "опись.csv"
 UA = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/128 Safari/537.36"}
-CTX = ssl.create_default_context()
-CTX.check_hostname, CTX.verify_mode = False, ssl.CERT_NONE
+CTX = ssl.create_default_context()                       # сертификат сайта проверяется
+_INSECURE = ssl.create_default_context()
+_INSECURE.check_hostname, _INSECURE.verify_mode = False, ssl.CERT_NONE
+_UNVERIFIED = set()
+
+
+def urlopen(req, timeout=120):
+    """Запрос с проверкой сертификата. Часть сайтов УК отдаёт неполную цепочку (или сертификат российского УЦ, которого
+    нет в системном хранилище): для такого сайта запрос повторяется без проверки, и это печатается."""
+    try:
+        return urllib.request.urlopen(req, timeout=timeout, context=CTX)
+    except urllib.error.URLError as e:
+        if not isinstance(getattr(e, "reason", None), ssl.SSLCertVerificationError):
+            raise
+        host = urllib.parse.urlsplit(req.full_url).hostname
+        if host not in _UNVERIFIED:
+            _UNVERIFIED.add(host)
+            print(f"внимание: сертификат {host} не проверен ({e.reason.verify_message}); запрос без проверки", flush=True)
+        return urllib.request.urlopen(req, timeout=timeout, context=_INSECURE)
 
 
 def get(url, tries=3):
     for k in range(tries):
         try:
-            return urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=120, context=CTX).read()
+            return urlopen(urllib.request.Request(url, headers=UA)).read()
         except Exception:  # noqa: BLE001
             time.sleep(3 * (k + 1))
     return None
